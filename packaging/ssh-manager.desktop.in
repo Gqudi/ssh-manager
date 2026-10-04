@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=SSH Manager
+Name[de]=SSH-Manager
+GenericName=SSH Connection Manager
+GenericName[de]=SSH-Verbindungsmanager
+Comment=Manage and open SSH connections
+Comment[de]=SSH-Verbindungen verwalten und öffnen
+Exec=@EXEC@
+Icon=@ICON@
+Terminal=false
+Categories=Network;RemoteAccess;
+Keywords=ssh;sftp;scp;remote;server;host;connection;terminal;
+StartupNotify=true
+StartupWMClass=ssh-manager

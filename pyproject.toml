@@ -27,3 +27,7 @@ pythonpath = ["src"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ssh_manager"]
+
+[tool.hatch.build]
+# Ship the window icon even though it is not a Python module.
+artifacts = ["src/ssh_manager/assets/*.svg"]

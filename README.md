@@ -25,6 +25,8 @@ v0.1.0 — a small PySide6/Qt Widgets SSH connection manager using SQLite and SQ
 - Private-key path is stored, never the private key contents
 - Passwords are not stored by v0.1
 - Designed to work especially well on Linux/KDE
+- Installs as a desktop application: application-menu entry, icon and an
+  `ssh-manager` launcher
 
 ## Requirements
 
@@ -32,22 +34,45 @@ v0.1.0 — a small PySide6/Qt Widgets SSH connection manager using SQLite and SQ
 - A working `ssh` client for Connect
 - PySide6 and SQLAlchemy
 
-## Linux setup
+## Installation (Linux desktop)
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
-python -m ssh_manager
+make install
 ```
 
-Or:
+This installs into `~/.local` and adds **SSH Manager** to the application menu
+(Internet → Remote Access; searchable as "SSH Manager" in KRunner and the launcher).
+No root is needed:
+
+| | |
+|---|---|
+| launcher | `~/.local/bin/ssh-manager` |
+| desktop entry | `~/.local/share/applications/ssh-manager.desktop` |
+| icon | `~/.local/share/icons/hicolor/scalable/apps/ssh-manager.svg` |
+| virtualenv | `~/.local/share/ssh-manager/venv` |
+
+For a system-wide install:
 
 ```bash
-.venv/bin/ssh-manager
+sudo make install PREFIX=/usr
 ```
 
-On Arch Linux, you can also use the system Python environment if you prefer, but a virtual environment is recommended for development.
+Undo it with `make uninstall` (pass the same `PREFIX`). Your connections are stored in
+the application-data directory and are **not** deleted.
+
+The install builds a virtualenv that can see the distribution's Python packages, so a
+distro PySide6/Qt is reused instead of downloaded and duplicated (~700 MB); pip still
+installs anything missing, such as SQLAlchemy. Use `ISOLATED=1` for a self-contained
+virtualenv that does not depend on distro packages:
+
+```bash
+make install ISOLATED=1
+```
+
+After editing the source, re-run `make install` to update the installed copy.
+
+The install refreshes the desktop and icon caches, including KDE's. If the menu entry
+still does not appear, log out and back in.
 
 ## Database
 
@@ -81,6 +106,18 @@ exported.
 ## Development
 
 ```bash
+make run     # create .venv on first use, then run from source
+make test    # run the test suite
+```
+
+Or manually:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
 python -m pip install -e ".[dev]"
 python -m pytest
 ```
+
+On Arch Linux, you can also use the system Python environment if you prefer, but a
+virtual environment is recommended for development.
