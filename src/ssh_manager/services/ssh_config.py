@@ -13,8 +13,8 @@ import getpass
 import os
 import re
 import shlex
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Iterable
 
 from ..database.models import Connection
 

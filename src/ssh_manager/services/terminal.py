@@ -15,9 +15,9 @@ import shlex
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
 
 
 class TerminalError(RuntimeError):
@@ -31,6 +31,14 @@ class TerminalNotFoundError(TerminalError):
 class TerminalLaunchError(TerminalError):
     """A terminal emulator was found but could not be started."""
 
+
+#: Terminal type used when the environment does not carry a usable one.  An
+#: application started from the desktop menu has no TERM at all, and ssh
+#: forwards TERM to the remote session, where ncurses needs it.
+FALLBACK_TERM = "xterm-256color"
+
+#: TERM values the remote side can make no sense of.
+_UNUSABLE_TERMS = frozenset({"", "unknown", "dumb"})
 
 #: Terminals offered in the connection dialog and used as detection fallbacks,
 #: in order of preference.
@@ -146,6 +154,14 @@ class ResolvedTerminal:
         return build_command(self.executable, ssh_args, self.prefix_args)
 
 
+@dataclass(frozen=True)
+class LaunchedTerminal:
+    """A terminal emulator that was started, and how it was chosen."""
+
+    name: str
+    warnings: tuple[str, ...] = ()
+
+
 def _split_command(value: str) -> list[str]:
     try:
         return shlex.split(value)
@@ -252,11 +268,25 @@ def resolve_terminal(
     raise TerminalNotFoundError(message)
 
 
-def _spawn(argv: Sequence[str]) -> subprocess.Popen:
+def _child_environment(environ: Mapping[str, str]) -> dict[str, str]:
+    """The environment for the spawned terminal, with a usable ``TERM``.
+
+    Terminals that set their own terminal type (kitty, for instance) override
+    this anyway; it matters for those that pass the environment through, where
+    an unset TERM would reach the remote session and break screen programs.
+    """
+    env = dict(environ)
+    if env.get("TERM", "").strip().lower() in _UNUSABLE_TERMS:
+        env["TERM"] = FALLBACK_TERM
+    return env
+
+
+def _spawn(argv: Sequence[str], env: Mapping[str, str]) -> subprocess.Popen:
     kwargs: dict = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
+        "env": dict(env),
     }
     if os.name == "posix":
         # Detach so the terminal window survives the connection manager exiting.
@@ -275,26 +305,35 @@ def open_terminal(
     home: Path | None = None,
     which: Callable[[str], str | None] | None = None,
     platform: str | None = None,
-) -> subprocess.Popen:
-    """Open a new terminal window running the given ``ssh`` command."""
+) -> LaunchedTerminal:
+    """Open a new terminal window running the given ``ssh`` command.
+
+    Returns the terminal that was actually started, including any warnings
+    about configured terminals that had to be skipped, so callers can tell the
+    user when their preference was not available.
+    """
     ssh_args = list(ssh_args)
     platform = sys.platform if platform is None else platform
     environ = os.environ if environ is None else environ
     home = Path.home() if home is None else Path(home)
     which = shutil.which if which is None else which
+    env = _child_environment(environ)
 
     preferred = (terminal or "").strip()
     if preferred and preferred != "system":
         executable = which(preferred)
         if executable:
-            return _spawn(build_command(executable, ssh_args))
+            _spawn(build_command(executable, ssh_args), env)
+            return LaunchedTerminal(name=Path(executable).name)
 
     if platform == "darwin" and which("osascript"):
         script = f'tell application "Terminal" to do script {shlex.join(ssh_args)!r}'
-        return _spawn(["osascript", "-e", script])
+        _spawn(["osascript", "-e", script], env)
+        return LaunchedTerminal(name="Terminal.app")
 
     if platform.startswith("win") and which("wt"):
-        return _spawn(["wt", *ssh_args])
+        _spawn(["wt", *ssh_args], env)
+        return LaunchedTerminal(name="wt")
 
     resolved = resolve_terminal(
         preferred if preferred != "system" else None,
@@ -302,4 +341,5 @@ def open_terminal(
         home=home,
         which=which,
     )
-    return _spawn(resolved.command(ssh_args))
+    _spawn(resolved.command(ssh_args), env)
+    return LaunchedTerminal(name=resolved.name, warnings=resolved.warnings)

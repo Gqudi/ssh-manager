@@ -3,11 +3,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, QStandardPaths
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
-from .database.database import Database
+from . import __version__
+from .database.database import Database, SchemaTooNewError
 from .ui.main_window import MainWindow
 
 # Basename of the installed .desktop file, the icon, and the launcher.
@@ -22,10 +23,22 @@ def _app_icon() -> QIcon:
     return QIcon(str(Path(__file__).parent / "assets" / f"{DESKTOP_FILE_NAME}.svg"))
 
 
+def _data_directory() -> Path:
+    """The platform's application-data directory, as Qt resolves it."""
+    return Path(
+        QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.AppLocalDataLocation
+        )
+    )
+
+
 def main() -> None:
+    # These names decide the application-data and settings directories: changing
+    # them would strand databases of existing installations.
     QCoreApplication.setOrganizationName("SSH Manager")
     QCoreApplication.setOrganizationDomain("local")
     QCoreApplication.setApplicationName("SSH Manager")
+    QCoreApplication.setApplicationVersion(__version__)
 
     app = QApplication(sys.argv)
     app.setApplicationDisplayName("SSH Manager")
@@ -34,8 +47,12 @@ def main() -> None:
     app.setDesktopFileName(DESKTOP_FILE_NAME)
     app.setWindowIcon(_app_icon())
 
-    database = Database()
-    database.create_tables()
+    database = Database(_data_directory())
+    try:
+        database.initialize()
+    except SchemaTooNewError as exc:
+        QMessageBox.critical(None, "SSH Manager", str(exc))
+        raise SystemExit(1) from exc
 
     window = MainWindow(database)
     window.show()

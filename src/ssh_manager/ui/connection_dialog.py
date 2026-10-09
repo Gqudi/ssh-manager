@@ -7,10 +7,10 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QHBoxLayout,
+    QLabel,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
@@ -25,7 +25,9 @@ from ..services.terminal import SUPPORTED_TERMINALS, TerminalNotFoundError, reso
 
 
 class ConnectionDialog(QDialog):
-    def __init__(self, parent=None, connection: Connection | None = None) -> None:
+    def __init__(
+        self, parent: QWidget | None = None, connection: Connection | None = None
+    ) -> None:
         super().__init__(parent)
         self.connection = connection
         self.setWindowTitle("Edit Connection" if connection else "Add Connection")
@@ -39,9 +41,14 @@ class ConnectionDialog(QDialog):
         self.username_edit = QLineEdit()
 
         self.auth_combo = QComboBox()
-        self.auth_combo.addItem("SSH Agent", "agent")
+        self.auth_combo.addItem("SSH Agent (OpenSSH default)", "agent")
         self.auth_combo.addItem("Private Key", "key")
         self.auth_combo.addItem("Password", "password")
+        self.auth_combo.setToolTip(
+            "Agent: ssh uses the agent and OpenSSH's usual method order.\n"
+            "Private key: only the key below is offered (IdentitiesOnly).\n"
+            "Password: ssh is asked for a password; nothing is stored."
+        )
 
         self.key_edit = QLineEdit()
         self.key_browse = QPushButton("Browse…")
@@ -79,7 +86,9 @@ class ConnectionDialog(QDialog):
         self.remote_command.setPlaceholderText("Optional command, e.g. htop")
 
         self.extra_options = QPlainTextEdit()
-        self.extra_options.setPlaceholderText("One OpenSSH -o option per line, e.g.\nStrictHostKeyChecking=accept-new")
+        self.extra_options.setPlaceholderText(
+            "One OpenSSH -o option per line, e.g.\nStrictHostKeyChecking=accept-new"
+        )
         self.extra_options.setFixedHeight(100)
 
         ssh = QWidget()
@@ -108,10 +117,10 @@ class ConnectionDialog(QDialog):
         terminal_form = QFormLayout(terminal_page)
         terminal_form.addRow("Terminal", self.terminal_combo)
 
-        tabs = QTabWidget()
-        tabs.addTab(basic, "Connection")
-        tabs.addTab(ssh, "SSH Options")
-        tabs.addTab(terminal_page, "Terminal")
+        self.tabs = QTabWidget()
+        self.tabs.addTab(basic, "Connection")
+        self.tabs.addTab(ssh, "SSH Options")
+        self.tabs.addTab(terminal_page, "Terminal")
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save
@@ -120,9 +129,22 @@ class ConnectionDialog(QDialog):
         buttons.accepted.connect(self.validate_and_accept)
         buttons.rejected.connect(self.reject)
 
+        self.hint_label = QLabel()
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setVisible(False)
+
         layout = QVBoxLayout(self)
-        layout.addWidget(tabs)
+        layout.addWidget(self.tabs)
+        layout.addWidget(self.hint_label)
         layout.addWidget(buttons)
+
+        for field in (
+            self.name_edit,
+            self.hostname_edit,
+            self.username_edit,
+            self.key_edit,
+        ):
+            field.textChanged.connect(self.clear_hint)
 
         self.auth_combo.currentIndexChanged.connect(self.update_key_state)
         self.load_connection()
@@ -163,20 +185,44 @@ class ConnectionDialog(QDialog):
         self.key_browse.setEnabled(enabled)
 
     def browse_key(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(self, "Select SSH private key", str(Path.home() / ".ssh"))
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select SSH private key", str(Path.home() / ".ssh")
+        )
         if path:
             self.key_edit.setText(path)
 
     def validate_and_accept(self) -> None:
-        if not self.name_edit.text().strip():
-            self.name_edit.setFocus(); return
-        if not self.hostname_edit.text().strip():
-            self.hostname_edit.setFocus(); return
-        if not self.username_edit.text().strip():
-            self.username_edit.setFocus(); return
-        if self.auth_combo.currentData() == "key" and not self.key_edit.text().strip():
-            self.key_edit.setFocus(); return
+        required = (
+            (self.name_edit, "name"),
+            (self.hostname_edit, "hostname"),
+            (self.username_edit, "username"),
+        )
+        for field, label in required:
+            if not field.text().strip():
+                self.tabs.setCurrentIndex(0)
+                field.setFocus()
+                self.status_hint(f"Please fill in the connection {label}.")
+                return
+
+        if (
+            self.auth_combo.currentData() == "key"
+            and not self.key_edit.text().strip()
+        ):
+            self.tabs.setCurrentIndex(0)
+            self.key_edit.setFocus()
+            self.status_hint("Key authentication needs a private-key path.")
+            return
         self.accept()
+
+    def status_hint(self, message: str) -> None:
+        """Show why saving was refused, next to the buttons."""
+        self.hint_label.setText(message)
+        self.hint_label.setVisible(True)
+
+    def clear_hint(self) -> None:
+        """Hide the hint again as soon as the user starts editing."""
+        self.hint_label.clear()
+        self.hint_label.setVisible(False)
 
     def data(self) -> dict:
         return {

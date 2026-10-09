@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import datetime, timezone
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -10,7 +11,7 @@ from sqlalchemy import select
 from ..database.database import Database
 from ..database.models import Connection
 from .ssh_config import ImportedHost, ImportSummary, serialize_connections
-from .terminal import open_terminal
+from .terminal import LaunchedTerminal, open_terminal
 
 
 class ConnectionService:
@@ -27,6 +28,8 @@ class ConnectionService:
                     | Connection.hostname.ilike(pattern)
                     | Connection.username.ilike(pattern)
                     | Connection.group_name.ilike(pattern)
+                    | Connection.notes.ilike(pattern)
+                    | Connection.private_key.ilike(pattern)
                 )
             return list(session.scalars(stmt).all())
 
@@ -34,7 +37,8 @@ class ConnectionService:
         with self.database.session() as session:
             return session.get(Connection, connection_id)
 
-    def create(self, **data) -> Connection:
+    def create(self, **data: Any) -> Connection:
+        """Store a new connection; ``data`` are :class:`Connection` fields."""
         with self.database.session() as session:
             connection = Connection(id=str(uuid4()), **data)
             session.add(connection)
@@ -42,7 +46,7 @@ class ConnectionService:
             session.refresh(connection)
             return connection
 
-    def update(self, connection_id: str, **data) -> Connection | None:
+    def update(self, connection_id: str, **data: Any) -> Connection | None:
         with self.database.session() as session:
             connection = session.get(Connection, connection_id)
             if connection is None:
@@ -68,7 +72,7 @@ class ConnectionService:
         if original is None:
             return None
         return self.create(
-            name=f"{original.name} (Copy)",
+            name=self._unique_name(f"{original.name} (Copy)", self.existing_names()),
             hostname=original.hostname,
             port=original.port,
             username=original.username,
@@ -143,7 +147,14 @@ class ConnectionService:
         return summary
 
     @staticmethod
-    def _unique_name(base: str, existing: dict[str, Connection]) -> str:
+    def _unique_name(base: str, existing: Collection[str]) -> str:
+        """``base`` if it is still free, otherwise ``base (2)``, ``base (3)``, …
+
+        ``existing`` holds lower-cased names, as returned by
+        :meth:`existing_names`.
+        """
+        if base.lower() not in existing:
+            return base
         index = 2
         while f"{base} ({index})".lower() in existing:
             index += 1
@@ -165,8 +176,33 @@ class ConnectionService:
     def build_ssh_args(connection: Connection) -> list[str]:
         args = ["ssh", "-p", str(connection.port or 22)]
 
-        if connection.private_key:
+        extra_lines = [
+            line.strip()
+            for line in (connection.extra_options or "").splitlines()
+            if line.strip()
+        ]
+        # OpenSSH keeps the first value for a repeated -o keyword, so do not emit
+        # a default when the user's extra options already set the same keyword.
+        extra_keywords = {
+            ConnectionService._extra_option_keyword(line) for line in extra_lines
+        }
+
+        def add_option(option: str) -> None:
+            """Append ``-o option`` unless the user overrode that keyword."""
+            if ConnectionService._extra_option_keyword(option) not in extra_keywords:
+                args.extend(["-o", option])
+
+        # The authentication method decides which methods ssh may try; without
+        # these flags every method would just be left at OpenSSH's defaults.
+        auth_method = connection.auth_method or "agent"
+        if auth_method == "key" and connection.private_key:
             args += ["-i", os.path.expanduser(connection.private_key)]
+            # Offer exactly this key, so the agent's other identities cannot
+            # exhaust the server's authentication attempts.
+            add_option("IdentitiesOnly=yes")
+        elif auth_method == "password":
+            add_option("PreferredAuthentications=password,keyboard-interactive")
+            add_option("PubkeyAuthentication=no")
 
         if connection.forward_agent:
             args.append("-A")
@@ -175,21 +211,11 @@ class ConnectionService:
         if connection.x11_forwarding:
             args.append("-X")
 
-        extra_lines = [
-            line.strip()
-            for line in (connection.extra_options or "").splitlines()
-            if line.strip()
-        ]
-        # OpenSSH keeps the first value for a repeated -o keyword, so do not emit
-        # our default when the user's extra options already set it.
-        has_alive_count_max = any(
-            ConnectionService._extra_option_keyword(line) == "serveralivecountmax"
-            for line in extra_lines
-        )
-        if (connection.server_alive_interval or 0) > 0:
+        if (
+            connection.server_alive_interval or 0
+        ) > 0 and "serveraliveinterval" not in extra_keywords:
             args += ["-o", f"ServerAliveInterval={connection.server_alive_interval}"]
-            if not has_alive_count_max:
-                args += ["-o", "ServerAliveCountMax=3"]
+            add_option("ServerAliveCountMax=3")
         if connection.proxy_jump:
             args += ["-J", connection.proxy_jump.strip()]
 
@@ -199,6 +225,13 @@ class ConnectionService:
         for line in extra_lines:
             args += ["-o", line]
 
+        if connection.remote_command and "requesttty" not in extra_keywords:
+            # ssh allocates a pseudo-terminal by itself only when no command is
+            # given.  With one it does not, so the remote program runs without
+            # a TERM and screen programs (htop, top, tmux, …) fail to start.
+            # -t asks for the pty an interactive login would get.
+            args.append("-t")
+
         args.append(f"{connection.username}@{connection.hostname}")
 
         if connection.remote_command:
@@ -206,6 +239,6 @@ class ConnectionService:
 
         return args
 
-    def connect(self, connection: Connection) -> None:
+    def connect(self, connection: Connection) -> LaunchedTerminal:
         """Open the connection in a new terminal window."""
-        open_terminal(self.build_ssh_args(connection), connection.terminal)
+        return open_terminal(self.build_ssh_args(connection), connection.terminal)

@@ -26,10 +26,17 @@ def make_which(installed: set[str]):
     return which
 
 
-class FakePopen:
-    def __init__(self, argv, **kwargs):
-        self.argv = list(argv)
-        self.kwargs = kwargs
+@pytest.fixture
+def spawn(monkeypatch):
+    """Record every argv handed to subprocess.Popen instead of launching it."""
+    spawned: list[tuple[list[str], dict]] = []
+
+    class FakePopen:
+        def __init__(self, argv, **kwargs):
+            spawned.append((list(argv), kwargs))
+
+    monkeypatch.setattr("ssh_manager.services.terminal.subprocess.Popen", FakePopen)
+    return spawned
 
 
 @pytest.mark.parametrize(
@@ -212,28 +219,87 @@ def test_resolve_raises_when_no_terminal_exists():
     assert "No terminal emulator" in str(excinfo.value)
 
 
-def test_open_terminal_spawns_detached(monkeypatch, tmp_path):
-    monkeypatch.setattr("ssh_manager.services.terminal.subprocess.Popen", FakePopen)
-    process = open_terminal(
+def test_open_terminal_spawns_detached(spawn, tmp_path):
+    launched = open_terminal(
         SSH_ARGS, "system", environ={}, home=tmp_path, which=make_which({"kitty"})
     )
-    assert process.argv == ["/usr/bin/kitty", "--hold", *SSH_ARGS]
-    assert process.kwargs["start_new_session"] is True
-    assert process.kwargs["stdin"] == subprocess.DEVNULL
-    assert process.kwargs["stdout"] == subprocess.DEVNULL
-    assert process.kwargs["stderr"] == subprocess.DEVNULL
+
+    argv, kwargs = spawn[0]
+    assert argv == ["/usr/bin/kitty", "--hold", *SSH_ARGS]
+    assert kwargs["start_new_session"] is True
+    assert kwargs["stdin"] == subprocess.DEVNULL
+    assert kwargs["stdout"] == subprocess.DEVNULL
+    assert kwargs["stderr"] == subprocess.DEVNULL
+    assert launched.name == "kitty"
+    assert launched.warnings == ()
 
 
-def test_open_terminal_honours_configured_terminal(monkeypatch, tmp_path):
-    monkeypatch.setattr("ssh_manager.services.terminal.subprocess.Popen", FakePopen)
-    process = open_terminal(
+def test_open_terminal_honours_configured_terminal(spawn, tmp_path):
+    launched = open_terminal(
         SSH_ARGS,
         "xterm",
         environ={},
         home=tmp_path,
         which=make_which({"xterm", "kitty"}),
     )
-    assert process.argv == ["/usr/bin/xterm", "-e", *SSH_ARGS]
+
+    assert spawn[0][0] == ["/usr/bin/xterm", "-e", *SSH_ARGS]
+    assert launched.name == "xterm"
+
+
+def test_open_terminal_reports_which_preferences_were_skipped(spawn, tmp_path):
+    # The connection asks for konsole, $TERMINAL names kitty, only xterm exists.
+    launched = open_terminal(
+        SSH_ARGS,
+        "konsole",
+        environ={"TERMINAL": "kitty"},
+        home=tmp_path,
+        which=make_which({"xterm"}),
+    )
+
+    assert launched.name == "xterm"
+    assert any("konsole" in warning for warning in launched.warnings)
+    assert any("$TERMINAL" in warning for warning in launched.warnings)
+    assert spawn[0][0] == ["/usr/bin/xterm", "-e", *SSH_ARGS]
+
+
+def test_spawn_environment_supplies_a_terminal_type(spawn, tmp_path):
+    # An application started from the desktop menu has no TERM, and ssh
+    # forwards TERM to the remote session.
+    open_terminal(
+        SSH_ARGS, "system", environ={}, home=tmp_path, which=make_which({"kitty"})
+    )
+
+    assert spawn[0][1]["env"]["TERM"] == "xterm-256color"
+
+
+@pytest.mark.parametrize("term", ["dumb", "unknown", "", "  "])
+def test_spawn_environment_replaces_unusable_terminal_types(spawn, tmp_path, term):
+    open_terminal(
+        SSH_ARGS,
+        "system",
+        environ={"TERM": term, "PATH": "/usr/bin"},
+        home=tmp_path,
+        which=make_which({"kitty"}),
+    )
+
+    env = spawn[0][1]["env"]
+    assert env["TERM"] == "xterm-256color"
+    # Everything else is passed through untouched.
+    assert env["PATH"] == "/usr/bin"
+
+
+@pytest.mark.parametrize("term", ["xterm-kitty", "xterm-256color", "foot"])
+def test_spawn_environment_keeps_a_usable_terminal_type(spawn, tmp_path, term):
+    open_terminal(
+        SSH_ARGS,
+        "system",
+        environ={"TERM": term},
+        home=tmp_path,
+        which=make_which({"kitty"}),
+    )
+
+    assert spawn[0][1]["env"]["TERM"] == term
 
 
 def test_open_terminal_wraps_launch_errors(monkeypatch, tmp_path):

@@ -3,7 +3,7 @@
 #   make install                    # per-user, into ~/.local
 #   sudo make install PREFIX=/usr   # system-wide
 #   make uninstall                  # undo (pass the same PREFIX)
-#   make run / make test            # development
+#   make run / make test / make lint / make check
 #
 # The install gets its own virtualenv. By default that venv can see the
 # distribution's Python packages, so a distro PySide6/Qt is reused rather than
@@ -45,7 +45,7 @@ ifeq ($(filter $(HOME)/%,$(PREFIX)),$(PREFIX))
 REFRESH_KDE = 1
 endif
 
-.PHONY: install uninstall run test clean
+.PHONY: install uninstall run test lint check clean
 
 install: $(BINDIR)/$(APPNAME) $(APPSDIR)/$(APPNAME).desktop $(ICONDIR)/$(APPNAME).svg
 	-@update-desktop-database $(APPSDIR) 2>/dev/null
@@ -103,6 +103,12 @@ run: $(DEVPY)
 
 test: $(DEVPY)
 	$(DEVPY) -m pytest
+
+lint: $(DEVPY)
+	$(DEVPY) -m ruff check .
+	$(DEVPY) -m mypy
+
+check: lint test
 
 clean:
 	rm -rf build
